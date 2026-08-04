@@ -1,0 +1,36 @@
+# Phase 1 — catalog-service only, replicas: 2, same node OK.
+# Swap image to your DOCR catalog image when ready
+#   (e.g. registry.digitalocean.com/cha-registry/kram:catalog-service).
+# Until then this uses a public stand-in so the kubectl muscle memory is the same.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog
+  namespace: eats-lab
+  labels:
+    app: catalog
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: catalog
+  template:
+    metadata:
+      labels:
+        app: catalog
+    spec:
+      containers:
+        - name: catalog
+          # Placeholder for Phase 1 learning — replace with real catalog image later.
+          image: hashicorp/http-echo:1.0
+          args: ["-text=catalog-service", "-listen=:8080"]
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi

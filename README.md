@@ -1,0 +1,93 @@
+# Eats lab — K3s on DigitalOcean
+
+Same SSH / IP-file plumbing as the Kram Eats repo (`deploy/digitalocean/DROPLET_*`).
+Create droplets with the **same SSH key** you already use for Eats. Add the same
+`SSH_PRIVATE_KEY` GitHub Actions secret to this repo.
+
+Production docker-compose in Eats stays untouched.
+
+## Flow
+
+```
+Fill inventory/*_IP  →  push  →  Actions: Bootstrap K3s cluster
+                                        ↓
+                              SSH (same key as Eats)
+                                        ↓
+                              K3s master / workers
+```
+
+## Inventory (placeholders)
+
+| File | Phase | Purpose |
+|------|-------|---------|
+| `inventory/MASTER_IP` | 1 | K3s server (control plane; also runs pods in learning mode) |
+| `inventory/WORKER1_IP` | 4 | First worker |
+| `inventory/WORKER2_IP` | 7 | Second worker |
+
+Replace `YOUR_DROPLET_IP` with the real IP:
+
+```bash
+echo '203.0.113.10' > inventory/MASTER_IP
+```
+
+## One-time GitHub setup
+
+1. Create this repo on GitHub and push.
+2. Repo → Settings → Secrets and variables → Actions → New secret  
+   Name: `SSH_PRIVATE_KEY`  
+   Value: **same private key** as Eats (the one whose public key is on your DO account).
+3. When creating the droplet in DigitalOcean, select that same SSH key.
+
+## Bootstrap master (Phase 1)
+
+1. Create an Ubuntu droplet (e.g. 2 vCPU / 2–4 GB).
+2. Put its IP in `inventory/MASTER_IP`, commit, push.
+3. Actions → **Bootstrap K3s cluster** → Run workflow → role = `master`.
+4. Download the `kubeconfig` artifact (or run locally):
+
+```bash
+./scripts/fetch-kubeconfig.sh
+export KUBECONFIG=$PWD/kubeconfig.yaml
+kubectl get nodes
+```
+
+Or bootstrap from your laptop (same `~/.ssh/id_rsa` as Eats deploy):
+
+```bash
+./scripts/bootstrap-master.sh
+./scripts/fetch-kubeconfig.sh
+export KUBECONFIG=$PWD/kubeconfig.yaml
+```
+
+## Phase 1 deploy
+
+```bash
+kubectl apply -f k8s/phase1/
+kubectl get nodes
+kubectl get pods -n eats-lab -o wide
+kubectl get deployments -n eats-lab
+kubectl get services -n eats-lab
+kubectl describe pod -n eats-lab <pod>
+kubectl logs -n eats-lab <pod>
+```
+
+You should see **two catalog pods on the same node**. Do not add workers until
+those commands are second nature.
+
+## Later phases (plumbing already stubs them)
+
+| Phase | Action |
+|-------|--------|
+| 4 | Fill `WORKER1_IP` → run workflow with role `worker1` → optionally `kubectl cordon` master |
+| 7 | Fill `WORKER2_IP` → role `worker2` |
+| CI/CD | Mirror Eats Actions: build → DOCR → `kubectl apply` / rollout (after week one) |
+
+## Learning vs production scheduling
+
+Master **runs workloads** by default (learning mode). When you want production-like:
+
+```bash
+kubectl cordon <master-node-name>
+# or
+kubectl taint nodes <master-node-name> node-role.kubernetes.io/control-plane=true:NoSchedule
+```

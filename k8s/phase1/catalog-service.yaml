@@ -1,0 +1,17 @@
+# Phase 2 will lean on this Service. Deployed early so Phase 1 can
+# still run: kubectl get services
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-service
+  namespace: eats-lab
+  labels:
+    app: catalog
+spec:
+  type: ClusterIP
+  selector:
+    app: catalog
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

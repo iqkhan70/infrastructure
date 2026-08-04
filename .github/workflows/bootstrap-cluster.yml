@@ -1,0 +1,137 @@
+name: Bootstrap K3s cluster
+
+# Same SSH plumbing as Eats (SSH_PRIVATE_KEY + inventory IP files).
+# Create the droplet with the SAME SSH key you use for Kram/Eats, then:
+#   1. Put the IP in inventory/MASTER_IP (or WORKER1_IP / WORKER2_IP)
+#   2. Commit & push (or just run workflow_dispatch if IP already on the branch)
+#   3. Actions → Bootstrap K3s cluster → Run workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      role:
+        description: Node to bootstrap
+        required: true
+        type: choice
+        options:
+          - master
+          - worker1
+          - worker2
+        default: master
+
+env:
+  SSH_USER: root
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve node IP from inventory
+        id: ip
+        run: |
+          case "${{ inputs.role }}" in
+            master)  IP_FILE=inventory/MASTER_IP ;;
+            worker1) IP_FILE=inventory/WORKER1_IP ;;
+            worker2) IP_FILE=inventory/WORKER2_IP ;;
+            *) echo "Unknown role"; exit 1 ;;
+          esac
+
+          echo "Reading $IP_FILE ..."
+          if [ ! -f "$IP_FILE" ]; then
+            echo "❌ Missing $IP_FILE"
+            exit 1
+          fi
+
+          NODE_IP=$(grep -v '^#' "$IP_FILE" | grep -v '^$' | head -1 | tr -d '[:space:]')
+          if [ -z "$NODE_IP" ] || [ "$NODE_IP" = "YOUR_DROPLET_IP" ]; then
+            echo "❌ Put a real Droplet IP in $IP_FILE (replace YOUR_DROPLET_IP), commit, then re-run."
+            exit 1
+          fi
+
+          echo "NODE_IP=$NODE_IP" >> "$GITHUB_ENV"
+          echo "role=${{ inputs.role }} ip=$NODE_IP"
+          echo "node_ip=$NODE_IP" >> "$GITHUB_OUTPUT"
+
+      - name: Validate SSH secret
+        run: |
+          if [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ]; then
+            echo "❌ SSH_PRIVATE_KEY secret is not configured."
+            echo "   Copy the same secret from the Eats/Kram repo:"
+            echo "   Settings → Secrets → Actions → SSH_PRIVATE_KEY"
+            exit 1
+          fi
+          echo "✅ SSH_PRIVATE_KEY present"
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known hosts
+        run: |
+          ssh-keyscan -H "$NODE_IP" >> ~/.ssh/known_hosts
+
+      - name: Test SSH
+        run: |
+          ssh -o StrictHostKeyChecking=no "${SSH_USER}@${NODE_IP}" "echo SSH_OK && uname -a"
+
+      - name: Bootstrap master (K3s server)
+        if: inputs.role == 'master'
+        run: |
+          ssh -o StrictHostKeyChecking=no "${SSH_USER}@${NODE_IP}" 'bash -s' <<'ENDSSH'
+          set -euo pipefail
+          if command -v k3s >/dev/null 2>&1 && systemctl is-active --quiet k3s; then
+            echo "K3s already running — skipping install"
+          else
+            curl -sfL https://get.k3s.io | sh -
+          fi
+          for i in $(seq 1 60); do
+            if kubectl get nodes >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          kubectl get nodes -o wide
+          echo "NODE_TOKEN=$(sudo cat /var/lib/rancher/k3s/server/node-token)"
+          ENDSSH
+
+      - name: Bootstrap worker (join master)
+        if: inputs.role == 'worker1' || inputs.role == 'worker2'
+        run: |
+          MASTER_FILE=inventory/MASTER_IP
+          MASTER_IP=$(grep -v '^#' "$MASTER_FILE" | grep -v '^$' | head -1 | tr -d '[:space:]')
+          if [ -z "$MASTER_IP" ] || [ "$MASTER_IP" = "YOUR_DROPLET_IP" ]; then
+            echo "❌ inventory/MASTER_IP must be set before joining workers"
+            exit 1
+          fi
+
+          ssh-keyscan -H "$MASTER_IP" >> ~/.ssh/known_hosts
+
+          TOKEN=$(ssh -o StrictHostKeyChecking=no "${SSH_USER}@${MASTER_IP}" \
+            "sudo cat /var/lib/rancher/k3s/server/node-token" | tr -d '[:space:]')
+          if [ -z "$TOKEN" ]; then
+            echo "❌ Could not read join token from master. Bootstrap master first."
+            exit 1
+          fi
+
+          ssh -o StrictHostKeyChecking=no "${SSH_USER}@${NODE_IP}" \
+            "curl -sfL https://get.k3s.io | K3S_URL=https://${MASTER_IP}:6443 K3S_TOKEN=${TOKEN} sh -"
+
+          ssh -o StrictHostKeyChecking=no "${SSH_USER}@${MASTER_IP}" "kubectl get nodes -o wide"
+
+      - name: Fetch kubeconfig artifact (master only)
+        if: inputs.role == 'master'
+        run: |
+          ssh -o StrictHostKeyChecking=no "${SSH_USER}@${NODE_IP}" \
+            "sudo cat /etc/rancher/k3s/k3s.yaml" > kubeconfig.yaml
+          sed -i "s/127.0.0.1/${NODE_IP}/g" kubeconfig.yaml
+          chmod 600 kubeconfig.yaml
+
+      - name: Upload kubeconfig
+        if: inputs.role == 'master'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubeconfig
+          path: kubeconfig.yaml
+          retention-days: 7

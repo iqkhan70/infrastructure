@@ -1,0 +1,8 @@
+# Local kubeconfig pulled from the cluster (contains credentials)
+kubeconfig.yaml
+*.kubeconfig
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
