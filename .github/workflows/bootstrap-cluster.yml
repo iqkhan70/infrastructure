@@ -106,6 +106,12 @@ jobs:
             exit 1
           fi
 
+          if [ "$NODE_IP" = "$MASTER_IP" ]; then
+            echo "❌ Worker IP ($NODE_IP) is the same as MASTER_IP."
+            echo "   Create a second droplet for the worker, put that IP in inventory/WORKER1_IP (or WORKER2_IP), then re-run."
+            exit 1
+          fi
+
           ssh-keyscan -H "$MASTER_IP" >> ~/.ssh/known_hosts
 
           TOKEN=$(ssh -o StrictHostKeyChecking=no "${SSH_USER}@${MASTER_IP}" \
@@ -115,8 +121,18 @@ jobs:
             exit 1
           fi
 
+          echo "Checking worker → master :6443 ..."
           ssh -o StrictHostKeyChecking=no "${SSH_USER}@${NODE_IP}" \
-            "curl -sfL https://get.k3s.io | K3S_URL=https://${MASTER_IP}:6443 K3S_TOKEN=${TOKEN} sh -"
+            "timeout 5 bash -c '</dev/tcp/${MASTER_IP}/6443' || nc -z -w 5 ${MASTER_IP} 6443" \
+            || { echo "❌ Worker cannot reach ${MASTER_IP}:6443 (firewall?)"; exit 1; }
+
+          if ! ssh -o StrictHostKeyChecking=no "${SSH_USER}@${NODE_IP}" \
+            "curl -sfL https://get.k3s.io | K3S_URL=https://${MASTER_IP}:6443 K3S_TOKEN=${TOKEN} sh -"; then
+            echo "❌ Join failed — k3s-agent logs:"
+            ssh -o StrictHostKeyChecking=no "${SSH_USER}@${NODE_IP}" \
+              "journalctl -u k3s-agent -n 80 --no-pager || true"
+            exit 1
+          fi
 
           ssh -o StrictHostKeyChecking=no "${SSH_USER}@${MASTER_IP}" "kubectl get nodes -o wide"
 
