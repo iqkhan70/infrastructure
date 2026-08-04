@@ -47,9 +47,11 @@ if ! "${SSH_CMD[@]}" "${DROPLET_USER}@${WORKER_IP}" "bash -c 'timeout 5 bash -c 
   exit 1
 fi
 
-echo "==> Joining ${ROLE} (${WORKER_IP}) to https://${MASTER_IP}:6443"
+# DO droplets of the same size often share a hostname; K3s rejects duplicate names.
+NODE_NAME="$ROLE"
+echo "==> Joining ${ROLE} (${WORKER_IP}) as node name '${NODE_NAME}' → https://${MASTER_IP}:6443"
 if ! "${SSH_CMD[@]}" "${DROPLET_USER}@${WORKER_IP}" \
-  "curl -sfL https://get.k3s.io | K3S_URL=https://${MASTER_IP}:6443 K3S_TOKEN=${TOKEN} sh -"; then
+  "hostnamectl set-hostname ${NODE_NAME}; curl -sfL https://get.k3s.io | K3S_URL=https://${MASTER_IP}:6443 K3S_TOKEN=${TOKEN} K3S_NODE_NAME=${NODE_NAME} sh -"; then
   echo "==> Join failed — dumping k3s-agent logs:" >&2
   "${SSH_CMD[@]}" "${DROPLET_USER}@${WORKER_IP}" \
     "journalctl -u k3s-agent -n 80 --no-pager || true" >&2

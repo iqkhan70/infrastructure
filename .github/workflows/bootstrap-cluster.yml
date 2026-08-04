@@ -127,7 +127,7 @@ jobs:
             || { echo "❌ Worker cannot reach ${MASTER_IP}:6443 (firewall?)"; exit 1; }
 
           if ! ssh -o StrictHostKeyChecking=no "${SSH_USER}@${NODE_IP}" \
-            "curl -sfL https://get.k3s.io | K3S_URL=https://${MASTER_IP}:6443 K3S_TOKEN=${TOKEN} sh -"; then
+            "hostnamectl set-hostname ${{ inputs.role }}; curl -sfL https://get.k3s.io | K3S_URL=https://${MASTER_IP}:6443 K3S_TOKEN=${TOKEN} K3S_NODE_NAME=${{ inputs.role }} sh -"; then
             echo "❌ Join failed — k3s-agent logs:"
             ssh -o StrictHostKeyChecking=no "${SSH_USER}@${NODE_IP}" \
               "journalctl -u k3s-agent -n 80 --no-pager || true"
