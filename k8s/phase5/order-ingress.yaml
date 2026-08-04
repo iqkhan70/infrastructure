@@ -1,0 +1,21 @@
+# Add to /etc/hosts: <MASTER_IP>  order.eats.local
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: order
+  namespace: eats-lab
+  labels:
+    app: order
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: order.eats.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: order-service
+                port:
+                  number: 80

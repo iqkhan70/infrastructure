@@ -1,22 +1,21 @@
-# catalog-service stand-in, replicas: 2.
-# topologySpreadConstraints prefers 1 pod per node (worker1 + worker2 once master is cordoned).
-# Swap image to your DOCR catalog image when ready.
+# Phase 5 — order-service stand-in (same pattern as catalog).
+# Industry default: replicas for HA + topology spread across nodes (not pinned to one worker).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: catalog
+  name: order
   namespace: eats-lab
   labels:
-    app: catalog
+    app: order
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: catalog
+      app: order
   template:
     metadata:
       labels:
-        app: catalog
+        app: order
     spec:
       topologySpreadConstraints:
         - maxSkew: 1
@@ -25,12 +24,11 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app: catalog
+              app: order
       containers:
-        - name: catalog
-          # Placeholder for Phase 1 learning — replace with real catalog image later.
+        - name: order
           image: hashicorp/http-echo:1.0
-          args: ["-text=catalog-service", "-listen=:8080"]
+          args: ["-text=order-service", "-listen=:8080"]
           ports:
             - name: http
               containerPort: 8080
