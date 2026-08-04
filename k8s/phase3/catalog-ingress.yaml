@@ -1,0 +1,26 @@
+# Phase 3 — Ingress → Service → Pods
+# K3s already ships Traefik (no extra install).
+#
+# On your Mac /etc/hosts add:
+#   <MASTER_IP>  catalog.eats.local
+# Then open: http://catalog.eats.local/
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: catalog
+  namespace: eats-lab
+  labels:
+    app: catalog
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: catalog.eats.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: catalog-service
+                port:
+                  number: 80
