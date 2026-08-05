@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: DOCR image tag (catalog-service or catalog-service-staging)
+        description: DOCR image tag (e.g. catalog-service-production)
         required: true
-        default: catalog-service
+        default: catalog-service-production
 
 env:
   SSH_USER: root

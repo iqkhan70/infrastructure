@@ -33,8 +33,8 @@ spec:
               app: catalog
       containers:
         - name: catalog
-          # Production tag from Eats compose; staging often uses catalog-service-staging
-          image: registry.digitalocean.com/cha-registry/kram:catalog-service
+          # DOCR tag (Eats production pushes catalog-service-production)
+          image: registry.digitalocean.com/cha-registry/kram:catalog-service-production
           imagePullPolicy: Always
           ports:
             - name: http
@@ -43,7 +43,7 @@ spec:
             - name: PROJECT_NAME
               value: TraditionalEats.CatalogService
             - name: ASPNETCORE_ENVIRONMENT
-              value: Production
+              value: Development
             - name: ASPNETCORE_URLS
               value: http://+:5003
             - name: ConnectionStrings__CatalogDb
