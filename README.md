@@ -92,6 +92,17 @@ kubectl cordon <master-node-name>
 kubectl taint nodes <master-node-name> node-role.kubernetes.io/control-plane=true:NoSchedule
 ```
 
+## Real Eats catalog (DOCR)
+
+After `DOCR_TOKEN` is on this repo (same DigitalOcean API token style as Eats):
+
+1. Commit/push `k8s/real-eats/` + `.github/workflows/deploy-real-catalog.yml`
+2. Actions → **Deploy real Eats catalog (DOCR)** → Run workflow  
+   - Tag: `catalog-service` (prod) or `catalog-service-staging`
+3. Open http://catalog.eats.local/swagger (hosts already point at master IP)
+
+This also deploys **mysql** + **redis** in `eats-lab` (catalog’s real deps from compose). Lab GHCR stand-in is replaced.
+
 ## CI/CD into the lab (closes the architecture loop)
 
 ```text

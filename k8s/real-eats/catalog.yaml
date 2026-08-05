@@ -1,0 +1,107 @@
+# Real TraditionalEats.CatalogService from DigitalOcean Container Registry
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog
+  namespace: eats-lab
+  labels:
+    app: catalog
+spec:
+  replicas: 2
+  progressDeadlineSeconds: 300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: catalog
+  template:
+    metadata:
+      labels:
+        app: catalog
+    spec:
+      imagePullSecrets:
+        - name: docr-cred
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: catalog
+      containers:
+        - name: catalog
+          # Production tag from Eats compose; staging often uses catalog-service-staging
+          image: registry.digitalocean.com/cha-registry/kram:catalog-service
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 5003
+          env:
+            - name: PROJECT_NAME
+              value: TraditionalEats.CatalogService
+            - name: ASPNETCORE_ENVIRONMENT
+              value: Production
+            - name: ASPNETCORE_URLS
+              value: http://+:5003
+            - name: ConnectionStrings__CatalogDb
+              value: server=mysql;port=3306;database=traditional_eats_catalog;user=root;password=eatslab-mysql-root;
+            - name: Redis__ConnectionString
+              value: redis:6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 40
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-service
+  namespace: eats-lab
+  labels:
+    app: catalog
+spec:
+  type: ClusterIP
+  selector:
+    app: catalog
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# http://catalog.eats.local/swagger — same hosts entry as before
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: catalog
+  namespace: eats-lab
+  labels:
+    app: catalog
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: catalog.eats.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: catalog-service
+                port:
+                  number: 80
