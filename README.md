@@ -92,7 +92,12 @@ kubectl cordon <master-node-name>
 kubectl taint nodes <master-node-name> node-role.kubernetes.io/control-plane=true:NoSchedule
 ```
 
+## Gradual Compose → K8s (prod planning)
+
+See [docs/COMPOSE_TO_K8S_MIGRATION.md](docs/COMPOSE_TO_K8S_MIGRATION.md) for service migration **order** (identity → catalog → …), hybrid cutover checklist, and what to change in Compose BFFs when pointing at K8s.
+
 ## Real Eats catalog (DOCR)
+
 
 After `DOCR_TOKEN` is on this repo (same DigitalOcean API token style as Eats):
 
