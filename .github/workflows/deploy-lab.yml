@@ -1,0 +1,113 @@
+name: Deploy lab catalog
+
+# Closes the loop from your architecture diagram:
+#   git push → Actions → docker build → GHCR → SSH → kubectl set image → rollout
+#
+# Secrets (same style as Eats):
+#   SSH_PRIVATE_KEY  — already used for bootstrap
+#
+# First time: make the GHCR package public (or add an imagePullSecret later)
+#   GitHub → Packages → eats-lab-catalog → Package settings → Change visibility → Public
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'app/catalog/**'
+      - 'k8s/cicd/**'
+      - '.github/workflows/deploy-lab.yml'
+  workflow_dispatch:
+
+env:
+  SSH_USER: root
+  IMAGE_NAME: eats-lab-catalog
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Image metadata
+        id: meta
+        run: |
+          REPO_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          SHA_SHORT=$(echo "${{ github.sha }}" | cut -c1-7)
+          IMAGE="ghcr.io/${REPO_LC}/${{ env.IMAGE_NAME }}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "tag=${SHA_SHORT}" >> "$GITHUB_OUTPUT"
+          echo "full=${IMAGE}:${SHA_SHORT}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: app/catalog
+          push: true
+          build-args: |
+            VERSION=${{ steps.meta.outputs.tag }}
+          tags: |
+            ${{ steps.meta.outputs.full }}
+            ${{ steps.meta.outputs.image }}:latest
+
+      - name: Resolve master IP
+        id: ip
+        run: |
+          IP=$(grep -v '^#' inventory/MASTER_IP | grep -v '^$' | head -1 | tr -d '[:space:]')
+          if [ -z "$IP" ] || [ "$IP" = "YOUR_DROPLET_IP" ]; then
+            echo "❌ Set inventory/MASTER_IP"
+            exit 1
+          fi
+          echo "master_ip=$IP" >> "$GITHUB_OUTPUT"
+
+      - name: Validate SSH secret
+        run: |
+          if [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ]; then
+            echo "❌ SSH_PRIVATE_KEY missing (same secret as bootstrap / Eats)"
+            exit 1
+          fi
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Deploy to K3s
+        env:
+          MASTER_IP: ${{ steps.ip.outputs.master_ip }}
+          FULL_IMAGE: ${{ steps.meta.outputs.full }}
+        run: |
+          ssh-keyscan -H "$MASTER_IP" >> ~/.ssh/known_hosts
+
+          scp -o StrictHostKeyChecking=no k8s/phase1/00-namespace.yaml \
+            "${SSH_USER}@${MASTER_IP}:/tmp/eats-lab-ns.yaml"
+          scp -o StrictHostKeyChecking=no k8s/cicd/catalog-deployment.yaml \
+            "${SSH_USER}@${MASTER_IP}:/tmp/catalog-deploy.yaml"
+          scp -o StrictHostKeyChecking=no k8s/phase1/catalog-service.yaml \
+            "${SSH_USER}@${MASTER_IP}:/tmp/catalog-svc.yaml"
+          scp -o StrictHostKeyChecking=no k8s/phase3/catalog-ingress.yaml \
+            "${SSH_USER}@${MASTER_IP}:/tmp/catalog-ing.yaml"
+
+          ssh -o StrictHostKeyChecking=no "${SSH_USER}@${MASTER_IP}" \
+            "IMAGE='${FULL_IMAGE}' bash -s" <<'ENDSSH'
+          set -euo pipefail
+          kubectl apply -f /tmp/eats-lab-ns.yaml
+          sed "s|image:.*|image: ${IMAGE}|" /tmp/catalog-deploy.yaml > /tmp/catalog-deploy.live.yaml
+          kubectl apply -f /tmp/catalog-deploy.live.yaml
+          kubectl apply -f /tmp/catalog-svc.yaml
+          kubectl apply -f /tmp/catalog-ing.yaml
+          kubectl -n eats-lab rollout status deployment/catalog --timeout=120s
+          kubectl -n eats-lab get pods -l app=catalog -o wide
+          kubectl -n eats-lab get deploy catalog -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+          ENDSSH

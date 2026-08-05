@@ -91,3 +91,26 @@ kubectl cordon <master-node-name>
 # or
 kubectl taint nodes <master-node-name> node-role.kubernetes.io/control-plane=true:NoSchedule
 ```
+
+## CI/CD into the lab (closes the architecture loop)
+
+```text
+git push → GitHub Actions → docker build → GHCR → SSH (same key as Eats) → kubectl apply / rollout
+```
+
+Workflow: `.github/workflows/deploy-lab.yml`  
+App: `app/catalog/` (VERSION baked into `index.html` at build)
+
+**One-time**
+
+1. Push this repo; `SSH_PRIVATE_KEY` secret already used for bootstrap.
+2. After the first successful build, set the GHCR package **Public**:  
+   GitHub → Packages → `eats-lab-catalog` → Package settings → Change visibility.
+3. Trigger **Deploy lab catalog** (`workflow_dispatch`) or push a change under `app/catalog/`.
+
+Then:
+
+```bash
+curl -s http://catalog.eats.local/
+# expect: catalog-<shortsha>
+```
