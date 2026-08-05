@@ -1,0 +1,44 @@
+# Tiny publisher → rabbitmq:5672 → queue "orders" (stand-in for MassTransit publish)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-publisher
+  namespace: eats-lab
+  labels:
+    app: order-publisher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-publisher
+  template:
+    metadata:
+      labels:
+        app: order-publisher
+    spec:
+      containers:
+        - name: publisher
+          image: python:3.12-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - pip install --no-cache-dir pika -q && python /scripts/publisher.py
+          env:
+            - name: AMQP_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-auth
+                  key: amqp-url
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      volumes:
+        - name: scripts
+          configMap:
+            name: rabbitmq-demo-scripts

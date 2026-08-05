@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-demo-scripts
+  namespace: eats-lab
+data:
+  publisher.py: |
+    import os, time, pika
+    url = os.environ["AMQP_URL"]
+    params = pika.URLParameters(url)
+    while True:
+        try:
+            conn = pika.BlockingConnection(params)
+            ch = conn.channel()
+            ch.queue_declare(queue="orders", durable=True)
+            n = 0
+            while True:
+                n += 1
+                body = f"order-{n}"
+                ch.basic_publish(
+                    exchange="",
+                    routing_key="orders",
+                    body=body,
+                    properties=pika.BasicProperties(delivery_mode=2),
+                )
+                print(f"published {body}", flush=True)
+                time.sleep(3)
+        except Exception as e:
+            print(f"publisher reconnecting: {e}", flush=True)
+            time.sleep(5)
+
+  consumer.py: |
+    import os, time, pika
+    url = os.environ["AMQP_URL"]
+    params = pika.URLParameters(url)
+    while True:
+        try:
+            conn = pika.BlockingConnection(params)
+            ch = conn.channel()
+            ch.queue_declare(queue="orders", durable=True)
+            def on_message(ch, method, properties, body):
+                print(f"consumed {body.decode()}", flush=True)
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+            ch.basic_qos(prefetch_count=1)
+            ch.basic_consume(queue="orders", on_message_callback=on_message)
+            print("consumer waiting on queue=orders", flush=True)
+            ch.start_consuming()
+        except Exception as e:
+            print(f"consumer reconnecting: {e}", flush=True)
+            time.sleep(5)

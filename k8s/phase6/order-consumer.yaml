@@ -1,0 +1,51 @@
+# Tiny consumer ← queue "orders" (stand-in for MassTransit consumer)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-consumer
+  namespace: eats-lab
+  labels:
+    app: order-consumer
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: order-consumer
+  template:
+    metadata:
+      labels:
+        app: order-consumer
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: order-consumer
+      containers:
+        - name: consumer
+          image: python:3.12-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - pip install --no-cache-dir pika -q && python /scripts/consumer.py
+          env:
+            - name: AMQP_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-auth
+                  key: amqp-url
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      volumes:
+        - name: scripts
+          configMap:
+            name: rabbitmq-demo-scripts
