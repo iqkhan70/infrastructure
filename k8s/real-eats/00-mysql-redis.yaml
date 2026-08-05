@@ -56,6 +56,21 @@ spec:
                   key: mysql-root-password
             - name: MYSQL_DATABASE
               value: traditional_eats_catalog
+            # Extra DBs for other lab services (create on every start — safe/idempotent)
+            - name: identity-db-init
+              value: "true"
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    for i in 1 2 3 4 5 6 7 8 9 10; do
+                      mysqladmin ping -h 127.0.0.1 -uroot -peatslab-mysql-root --silent && break
+                      sleep 2
+                    done
+                    mysql -uroot -peatslab-mysql-root -e "CREATE DATABASE IF NOT EXISTS traditional_eats_identity; CREATE DATABASE IF NOT EXISTS traditional_eats_catalog;"
           args:
             - --default-authentication-plugin=mysql_native_password
           resources:

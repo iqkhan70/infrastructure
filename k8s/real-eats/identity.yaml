@@ -1,0 +1,149 @@
+# Lab-only JWT / encryption for Identity — NOT production secrets.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: identity-lab-secrets
+  namespace: eats-lab
+type: Opaque
+stringData:
+  jwt-secret: "LabOnlyJwtSecret_ChangeMe_AtLeast32Chars!!"
+  encryption-master-key: "YourSuperSecretEncryptionKeyThatIsAtLeast32CharactersLong!"
+---
+# Real TraditionalEats.IdentityService from DOCR — lab MySQL/Redis/Rabbit only
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity
+  namespace: eats-lab
+  labels:
+    app: identity
+spec:
+  replicas: 2
+  progressDeadlineSeconds: 300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: identity
+  template:
+    metadata:
+      labels:
+        app: identity
+    spec:
+      imagePullSecrets:
+        - name: docr-cred
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: identity
+      containers:
+        - name: identity
+          # Latest available prod tag. No floating identity-service-production in DOCR —
+          # pipeline only pushed identity-service-production-<shortsha>; bump SHA after new deploys.
+          image: registry.digitalocean.com/cha-registry/kram:identity-service-production-8725a49
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 5000
+          env:
+            - name: PROJECT_NAME
+              value: TraditionalEats.IdentityService
+            - name: ASPNETCORE_ENVIRONMENT
+              value: Development
+            - name: ASPNETCORE_URLS
+              value: http://+:5000
+            # Lab MySQL — do NOT use prod until SEED/MIGRATE can be skipped
+            - name: ConnectionStrings__IdentityDb
+              value: server=mysql;port=3306;database=traditional_eats_identity;user=root;password=eatslab-mysql-root;
+            - name: Redis__ConnectionString
+              value: redis:6379
+            - name: RabbitMQ__HostName
+              value: rabbitmq
+            - name: RabbitMQ__UserName
+              value: eats
+            - name: RabbitMQ__Password
+              value: eatslab
+            - name: Jwt__Secret
+              valueFrom:
+                secretKeyRef:
+                  name: identity-lab-secrets
+                  key: jwt-secret
+            - name: Jwt__Issuer
+              value: Kram
+            - name: Jwt__Audience
+              value: Kram
+            - name: Jwt__AccessTokenExpirationMinutes
+              value: "60"
+            - name: AppSettings__BaseUrl
+              value: http://identity.eats.local
+            - name: Encryption__MasterKey
+              valueFrom:
+                secretKeyRef:
+                  name: identity-lab-secrets
+                  key: encryption-master-key
+            # Optional deps — not in lab yet; Identity may log warnings for outbound calls
+            - name: Services__CustomerService
+              value: http://customer-service:5001
+            - name: Services__NotificationService
+              value: http://notification-service:5006
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 45
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity-service
+  namespace: eats-lab
+  labels:
+    app: identity
+spec:
+  type: ClusterIP
+  selector:
+    app: identity
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# Add to /etc/hosts: <MASTER_IP>  identity.eats.local
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: identity
+  namespace: eats-lab
+  labels:
+    app: identity
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: identity.eats.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: identity-service
+                port:
+                  number: 80

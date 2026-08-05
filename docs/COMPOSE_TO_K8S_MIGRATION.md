@@ -35,6 +35,68 @@ Lab work so far (catalog on K3s) is learning + DOCR plumbing — not yet a prod 
 
 ---
 
+## Database rule (lab vs real hybrid) — non-negotiable for actual cutover
+
+We are **not** migrating the whole stack at once, so we **cannot** afford a second “prod” MySQL/Redis for services that move to K8s. Data stays where Compose already owns it.
+
+### Lab (current catalog.eats.local) — OK for learning
+
+| Piece | What we use today |
+|-------|-------------------|
+| Image | DOCR `kram:catalog-service-production` (real app bits) |
+| MySQL | **In-cluster lab** Service `mysql` (`eats-lab`) |
+| Connection | `ConnectionStrings__CatalogDb=server=mysql;…;database=traditional_eats_catalog;…` |
+| Redis | In-cluster `redis:6379` |
+
+Separate lab DB is **good** for experiments without touching live menus/users.
+
+**Do not** point lab catalog at prod MySQL until CatalogService supports skipping seed/migrate (e.g. `SEED_DATA=false`) in a **rebuilt** DOCR image — every pod start currently runs `Migrate()` + category ensure seed. Secret template for later: `k8s/real-eats/eats-prod-mysql.secret.example.yaml`.
+
+### Real / hybrid work — must use prod data plane
+
+When we start **actual** cutover (Identity/Catalog serving real traffic):
+
+```text
+K8s Pods (identity / catalog / …)
+        │
+        │  ConnectionStrings* / Redis__* / RabbitMQ__*
+        ▼
+Prod Compose droplet (or managed later)
+  ├── mysql   (traditional_eats_identity, traditional_eats_catalog, …)
+  ├── redis
+  └── rabbitmq   (shared MassTransit bus — stays until almost everything has moved)
+```
+
+**Rules**
+
+1. **One source of truth for SQL.** Prod MySQL stays on the Compose env (until we deliberately move the DB later — not part of early waves).
+2. **K8s apps point at that MySQL** via connection strings (host = prod DB reachable address — private IP, VPN, or DO private network — **not** the lab ClusterDNS name `mysql`).
+3. **Same database names** Compose already uses (`traditional_eats_identity`, `traditional_eats_catalog`, etc.).
+4. **No dual-write.** Stop the Compose container for a moved service so only K8s pods write that schema (BFFs still on Compose call K8s URLs).
+5. **Firewall / network first.** Cluster workers must be allowed to reach prod MySQL:3306 (and Redis) before flipping BFF URLs.
+
+### RabbitMQ — same shared-bus rule
+
+Compose already runs **one** RabbitMQ that MassTransit publishers/consumers use (`RabbitMQ__HostName: rabbitmq`, shared user/password). While any consumer or publisher remains on Compose and others move to K8s, they **must share that broker** — otherwise you get a split brain: Identity on K8s publishes to lab Rabbit while Order on Compose never sees the message.
+
+| Phase | RabbitMQ |
+|-------|----------|
+| **Lab only** | Optional in-cluster Rabbit (we used one for MassTransit demos). Fine for learning; **not** for hybrid prod traffic. |
+| **Hybrid (Identity/Catalog/… on K8s, rest on Compose)** | **Prod Compose RabbitMQ stays.** K8s pods set `RabbitMQ__HostName` (or equivalent) to a host the cluster can reach — prod droplet private IP / DNS — plus the **same** user/password/vhost as Compose `.env`. Open AMQP **5672** (and management only if needed) from workers → prod. |
+| **Later** | Move Rabbit to managed (DO/CloudAMQP) or K8s **only when** almost all MassTransit clients live on the new side — still one broker, cut DNS/env once. |
+
+**Do not** run Compose Rabbit **and** a second “prod” Rabbit for migrated services. Dual brokers without a bridge = lost events (notifications, order workflows, etc.).
+
+Services that use Rabbit today (from Compose): identity, order, customer, notification, chat, and others with `RabbitMQ__HostName` — all stay on the **same** hostname until you intentionally migrate the broker.
+
+**Why this matters for gradual migration**
+
+- BFFs, orders, and other Compose services keep reading/writing the **same** tables **and** consuming the **same** queues/exchanges.
+- Moving only compute (Identity/Catalog processes) onto K8s for HPA would fork data **or** messaging if we used a separate SQL **or** a separate Rabbit.
+- Lab MySQL/Rabbit in this repo stay for demos only; Wave 1+ replaces those connection strings / hostnames with **prod** hosts.
+
+---
+
 ## Target hybrid shape (after first two services)
 
 ```text
@@ -80,15 +142,14 @@ After cutover they become the K8s Ingress/LB base URLs.
 
 Any other service that hardcodes those Docker hostnames must be updated the same way.
 
-### 3. Same data plane
+### 3. Same data plane (prod MySQL stays; K8s only runs the app)
 
-K8s workloads must use the **same** databases and Redis as prod Compose:
+See **Database rule** above. Summary for cutover day:
 
-- Identity → `traditional_eats_identity` (same MySQL)
-- Catalog → `traditional_eats_catalog` (same MySQL)
-- Shared Redis as configured in prod
-
-Cluster nodes need network reachability to that MySQL/Redis (firewall / private network). Do **not** stand up a second empty DB for “prod” traffic.
+- K8s Identity/Catalog connection strings → **prod** MySQL/Redis (Compose droplet), **not** lab `server=mysql`.
+- Same DB names as Compose (`traditional_eats_identity`, `traditional_eats_catalog`, …).
+- Cluster network open to that MySQL/Redis.
+- Do **not** provision a second production SQL “for K8s” while other services remain on Compose.
 
 ### 4. Same secrets / auth contract
 
@@ -133,8 +194,8 @@ That is the “if we suddenly get big” lever — without migrating the whole m
 
 | Wave | Move to K8s | Prod changes |
 |------|-------------|--------------|
-| **0 – Lab** | Catalog (DOCR image, lab DB/Ingress) | None to real prod. Done for learning. |
-| **1 – First hybrid** | Identity + Catalog (prod DB/Redis) | BFF/chat URL env; stop Compose identity+catalog; Ingress hostnames. |
+| **0 – Lab** | Catalog (DOCR image, **lab** MySQL/Redis/Ingress) | None to real prod. Safe sandbox. |
+| **1 – First hybrid** | Identity + Catalog (**prod** MySQL/Redis connection strings) | BFF/chat URL env; stop Compose identity+catalog; open DB network path; Ingress hostnames. |
 | **2 – Read path** | Restaurant | BFF `Services__RestaurantService` (+ any HttpClients). |
 | **3 – Write spikes** | Order | BFF + payment/order callers; careful with payment coupling. |
 | **4 – Edge aggregators** | BFFs (optional) | Edge upstreams; larger blast radius. |
@@ -146,7 +207,8 @@ That is the “if we suddenly get big” lever — without migrating the whole m
 
 - Rewriting all services onto K8s at once.
 - Moving MySQL/Rabbit “because K8s” before apps need it.
-- Treating catalog lab (Development + separate lab MySQL) as production cutover.
+- Running a **separate production SQL** or **separate production RabbitMQ** for K8s-moved services while Compose still owns the rest of the product.
+- Treating catalog lab (Development + in-cluster lab MySQL) as production cutover.
 
 ---
 

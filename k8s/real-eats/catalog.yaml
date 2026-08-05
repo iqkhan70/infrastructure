@@ -33,7 +33,7 @@ spec:
               app: catalog
       containers:
         - name: catalog
-          # DOCR tag (Eats production pushes catalog-service-production)
+          # Latest prod floating tag (same build as catalog-service-production-<sha>)
           image: registry.digitalocean.com/cha-registry/kram:catalog-service-production
           imagePullPolicy: Always
           ports:
@@ -46,6 +46,7 @@ spec:
               value: Development
             - name: ASPNETCORE_URLS
               value: http://+:5003
+            # Lab MySQL only (in-cluster). Do NOT point at prod until Catalog image supports SEED_DATA=false.
             - name: ConnectionStrings__CatalogDb
               value: server=mysql;port=3306;database=traditional_eats_catalog;user=root;password=eatslab-mysql-root;
             - name: Redis__ConnectionString
