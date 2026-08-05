@@ -1,0 +1,13 @@
+# Phase 10 — PVC for RabbitMQ data (survives pod reschedule on same node path with local-path)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rabbitmq-data
+  namespace: eats-lab
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi

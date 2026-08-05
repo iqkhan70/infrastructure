@@ -1,0 +1,18 @@
+# Phase 10 — non-secret config. Edit MESSAGE → change index.html → rolling restart.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: catalog-config
+  namespace: eats-lab
+data:
+  index.html: |
+    catalog-service-prod
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: order-config
+  namespace: eats-lab
+data:
+  index.html: |
+    order-service-prod
