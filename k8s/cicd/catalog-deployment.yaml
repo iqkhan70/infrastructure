@@ -1,4 +1,4 @@
-# CI/CD target — image rewritten by GitHub Actions (ghcr.io/.../catalog:<sha>)
+# CI/CD target — Actions replaces the image tag and ensures ghcr-cred pull secret exists.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,6 +8,7 @@ metadata:
     app: catalog
 spec:
   replicas: 2
+  progressDeadlineSeconds: 300
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -21,6 +22,8 @@ spec:
       labels:
         app: catalog
     spec:
+      imagePullSecrets:
+        - name: ghcr-cred
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -30,7 +33,8 @@ spec:
               app: catalog
       containers:
         - name: catalog
-          image: ghcr.io/PLACEHOLDER/eats-lab-catalog:init
+          # Replaced by CI: ghcr.io/<owner>/eats-lab-catalog:<sha>
+          image: ghcr.io/iqkhan70/eats-lab-catalog:latest
           imagePullPolicy: Always
           ports:
             - name: http

@@ -1,13 +1,14 @@
 name: Deploy lab catalog
 
-# Closes the loop from your architecture diagram:
-#   git push → Actions → docker build → GHCR → SSH → kubectl set image → rollout
+# git push → build → GHCR → SSH → kubectl apply / rollout
 #
-# Secrets (same style as Eats):
-#   SSH_PRIVATE_KEY  — already used for bootstrap
+# Secrets:
+#   SSH_PRIVATE_KEY   — same as bootstrap / Eats
+#   GHCR_READ_TOKEN   — classic PAT with read:packages (and read:org if needed)
+#                       Username = your GitHub username (e.g. iqkhan70)
 #
-# First time: make the GHCR package public (or add an imagePullSecret later)
-#   GitHub → Packages → eats-lab-catalog → Package settings → Change visibility → Public
+# Why: GHCR packages stay private for pulls even when the git repo is public.
+#      Cluster nodes need imagePullSecret=ghcr-cred to pull the image.
 
 on:
   push:
@@ -71,10 +72,17 @@ jobs:
           fi
           echo "master_ip=$IP" >> "$GITHUB_OUTPUT"
 
-      - name: Validate SSH secret
+      - name: Validate secrets
         run: |
           if [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ]; then
-            echo "❌ SSH_PRIVATE_KEY missing (same secret as bootstrap / Eats)"
+            echo "❌ SSH_PRIVATE_KEY missing"
+            exit 1
+          fi
+          if [ -z "${{ secrets.GHCR_READ_TOKEN }}" ]; then
+            echo "❌ GHCR_READ_TOKEN missing"
+            echo "   Create a classic PAT: GitHub → Settings → Developer settings → Personal access tokens"
+            echo "   Scopes: read:packages"
+            echo "   Add it as Actions secret GHCR_READ_TOKEN on this repo"
             exit 1
           fi
 
@@ -87,6 +95,8 @@ jobs:
         env:
           MASTER_IP: ${{ steps.ip.outputs.master_ip }}
           FULL_IMAGE: ${{ steps.meta.outputs.full }}
+          GHCR_USER: ${{ github.repository_owner }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
         run: |
           ssh-keyscan -H "$MASTER_IP" >> ~/.ssh/known_hosts
 
@@ -100,14 +110,29 @@ jobs:
             "${SSH_USER}@${MASTER_IP}:/tmp/catalog-ing.yaml"
 
           ssh -o StrictHostKeyChecking=no "${SSH_USER}@${MASTER_IP}" \
-            "IMAGE='${FULL_IMAGE}' bash -s" <<'ENDSSH'
+            "IMAGE='${FULL_IMAGE}' GHCR_USER='${GHCR_USER}' GHCR_READ_TOKEN='${GHCR_READ_TOKEN}' bash -s" <<'ENDSSH'
           set -euo pipefail
           kubectl apply -f /tmp/eats-lab-ns.yaml
-          sed "s|image:.*|image: ${IMAGE}|" /tmp/catalog-deploy.yaml > /tmp/catalog-deploy.live.yaml
+
+          # Auth for private GHCR pulls (repo public ≠ package pullable)
+          kubectl -n eats-lab create secret docker-registry ghcr-cred \
+            --docker-server=ghcr.io \
+            --docker-username="$GHCR_USER" \
+            --docker-password="$GHCR_READ_TOKEN" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # Replace only the container image line (not imagePullSecrets)
+          sed -E "s|^([[:space:]]+image:).*|\1 ${IMAGE}|" /tmp/catalog-deploy.yaml \
+            > /tmp/catalog-deploy.live.yaml
+
           kubectl apply -f /tmp/catalog-deploy.live.yaml
           kubectl apply -f /tmp/catalog-svc.yaml
           kubectl apply -f /tmp/catalog-ing.yaml
-          kubectl -n eats-lab rollout status deployment/catalog --timeout=120s
+
+          # Clear pods stuck in ImagePullBackOff from earlier attempts
+          kubectl -n eats-lab delete pod -l app=catalog --force --grace-period=0 2>/dev/null || true
+
+          kubectl -n eats-lab rollout status deployment/catalog --timeout=180s
           kubectl -n eats-lab get pods -l app=catalog -o wide
           kubectl -n eats-lab get deploy catalog -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
           ENDSSH
