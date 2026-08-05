@@ -10,6 +10,12 @@ metadata:
     app: catalog
 spec:
   replicas: 2
+  # Phase 9 — rolling update: bring up a new Pod before killing an old one (no downtime).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: catalog
@@ -17,6 +23,7 @@ spec:
     metadata:
       labels:
         app: catalog
+        version: v2
     spec:
       topologySpreadConstraints:
         - maxSkew: 1
@@ -30,7 +37,7 @@ spec:
         - name: catalog
           # Placeholder for Phase 1 learning — replace with real catalog image later.
           image: hashicorp/http-echo:1.0
-          args: ["-text=catalog-service", "-listen=:8080"]
+          args: ["-text=catalog-service-v2", "-listen=:8080"]
           ports:
             - name: http
               containerPort: 8080
