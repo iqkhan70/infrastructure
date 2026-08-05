@@ -13,8 +13,11 @@ if [ -z "$ROLE" ] || { [ "$ROLE" != "worker1" ] && [ "$ROLE" != "worker2" ]; }; 
   exit 1
 fi
 
+# Preserve role — load-node-ip.sh overwrites ROLE when we load master next.
+WORKER_ROLE="$ROLE"
+
 # shellcheck source=load-node-ip.sh
-source "$SCRIPT_DIR/load-node-ip.sh" "$ROLE"
+source "$SCRIPT_DIR/load-node-ip.sh" "$WORKER_ROLE"
 WORKER_IP="$NODE_IP"
 
 # shellcheck source=load-node-ip.sh
@@ -22,8 +25,8 @@ source "$SCRIPT_DIR/load-node-ip.sh" master
 MASTER_IP="$NODE_IP"
 
 if [ "$WORKER_IP" = "$MASTER_IP" ]; then
-  echo "Error: ${ROLE} IP ($WORKER_IP) is the same as MASTER_IP." >&2
-  echo "Workers need a separate droplet. Leave inventory/${ROLE^^}_IP as YOUR_DROPLET_IP until you create one." >&2
+  echo "Error: ${WORKER_ROLE} IP ($WORKER_IP) is the same as MASTER_IP." >&2
+  echo "Workers need a separate droplet. Leave inventory/${WORKER_ROLE^^}_IP as YOUR_DROPLET_IP until you create one." >&2
   exit 1
 fi
 
@@ -48,8 +51,8 @@ if ! "${SSH_CMD[@]}" "${DROPLET_USER}@${WORKER_IP}" "bash -c 'timeout 5 bash -c 
 fi
 
 # DO droplets of the same size often share a hostname; K3s rejects duplicate names.
-NODE_NAME="$ROLE"
-echo "==> Joining ${ROLE} (${WORKER_IP}) as node name '${NODE_NAME}' → https://${MASTER_IP}:6443"
+NODE_NAME="$WORKER_ROLE"
+echo "==> Joining ${WORKER_ROLE} (${WORKER_IP}) as node name '${NODE_NAME}' → https://${MASTER_IP}:6443"
 if ! "${SSH_CMD[@]}" "${DROPLET_USER}@${WORKER_IP}" \
   "hostnamectl set-hostname ${NODE_NAME}; curl -sfL https://get.k3s.io | K3S_URL=https://${MASTER_IP}:6443 K3S_TOKEN=${TOKEN} K3S_NODE_NAME=${NODE_NAME} sh -"; then
   echo "==> Join failed — dumping k3s-agent logs:" >&2
@@ -61,4 +64,4 @@ fi
 echo "==> Cluster nodes (from master):"
 "${SSH_CMD[@]}" "${DROPLET_USER}@${MASTER_IP}" "kubectl get nodes -o wide"
 
-echo "==> ${ROLE} joined."
+echo "==> ${WORKER_ROLE} joined."
