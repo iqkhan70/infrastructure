@@ -8,6 +8,9 @@ metadata:
     app: rabbitmq
 spec:
   replicas: 1
+  # Single-replica lab: RollingUpdate can stick forever if the surge pod never becomes Ready.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: rabbitmq
@@ -45,10 +48,12 @@ spec:
           readinessProbe:
             tcpSocket:
               port: amqp
-            initialDelaySeconds: 10
+            initialDelaySeconds: 20
             periodSeconds: 5
+            failureThreshold: 12
           livenessProbe:
             tcpSocket:
               port: amqp
-            initialDelaySeconds: 30
+            initialDelaySeconds: 60
             periodSeconds: 10
+            failureThreshold: 6

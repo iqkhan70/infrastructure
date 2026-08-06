@@ -147,11 +147,23 @@ jobs:
 
           if [ "$needs_rabbit" = "1" ]; then
             kubectl apply -f /tmp/00-rabbitmq-secret.yaml
-            kubectl apply -f /tmp/rabbitmq-deployment.yaml
             kubectl apply -f /tmp/rabbitmq-service.yaml
             kubectl apply -f /tmp/rabbitmq-ingress.yaml
-            echo "Waiting for rabbitmq..."
-            kubectl -n eats-lab rollout status deployment/rabbitmq --timeout=180s
+
+            RABBIT_READY="$(kubectl -n eats-lab get deploy rabbitmq -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)"
+            if [ "${RABBIT_READY:-0}" = "1" ]; then
+              echo "rabbitmq already Ready — skip redeploy (avoids stuck RollingUpdate surge)"
+            else
+              echo "rabbitmq not Ready (readyReplicas=${RABBIT_READY:-0}); applying deployment..."
+              # Drop unavailable surge pods from prior stuck rolls
+              for p in $(kubectl -n eats-lab get pods -l app=rabbitmq --no-headers 2>/dev/null | awk '$2 !~ /^1\// {print $1}'); do
+                echo "Deleting non-ready rabbitmq pod: $p"
+                kubectl -n eats-lab delete pod "$p" --force --grace-period=0 2>/dev/null || true
+              done
+              kubectl apply -f /tmp/rabbitmq-deployment.yaml
+              echo "Waiting for rabbitmq..."
+              kubectl -n eats-lab rollout status deployment/rabbitmq --timeout=240s
+            fi
           fi
 
           for s in $SERVICES; do
