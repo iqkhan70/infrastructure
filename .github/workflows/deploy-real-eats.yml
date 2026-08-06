@@ -28,6 +28,8 @@ env:
   SSH_USER: root
   REGISTRY: registry.digitalocean.com
   IMAGE_REPO: cha-registry/kram
+  # Keep CI ↔ droplet SSH alive during slow rollouts (avoids Broken pipe)
+  SSH_OPTS: -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes
 
 jobs:
   deploy:
@@ -93,9 +95,14 @@ jobs:
           IDENTITY_IMAGE_TAG: ${{ inputs.identity_image_tag }}
         run: |
           set -euo pipefail
+          # shellcheck disable=SC2086
           ssh-keyscan -H "$MASTER_IP" >> ~/.ssh/known_hosts
 
-          # Bundles to copy (always shared + selected service manifests)
+          remote() {
+            # shellcheck disable=SC2086
+            ssh $SSH_OPTS "${SSH_USER}@${MASTER_IP}" "$@"
+          }
+
           COPY=(
             k8s/phase1/00-namespace.yaml
             k8s/real-eats/00-mysql-redis.yaml
@@ -107,15 +114,8 @@ jobs:
           for s in $SERVICES; do
             COPY+=("k8s/real-eats/${s}.yaml")
           done
-
-          scp -o StrictHostKeyChecking=no "${COPY[@]}" "${SSH_USER}@${MASTER_IP}:/tmp/"
-
-          # shellcheck disable=SC2087
-          ssh -o StrictHostKeyChecking=no "${SSH_USER}@${MASTER_IP}" \
-            "DOCR_TOKEN='${DOCR_TOKEN}' SERVICES='${SERVICES}' \
-             CATALOG_IMAGE_TAG='${CATALOG_IMAGE_TAG}' IDENTITY_IMAGE_TAG='${IDENTITY_IMAGE_TAG}' \
-             REGISTRY='${{ env.REGISTRY }}' IMAGE_REPO='${{ env.IMAGE_REPO }}' bash -s" <<'ENDSSH'
-          set -euo pipefail
+          # shellcheck disable=SC2086
+          scp $SSH_OPTS "${COPY[@]}" "${SSH_USER}@${MASTER_IP}:/tmp/"
 
           tag_for() {
             case "$1" in
@@ -132,51 +132,72 @@ jobs:
             esac
           done
 
+          # --- Apply (short SSH): shared deps ---
+          remote "DOCR_TOKEN='${DOCR_TOKEN}' NEEDS_RABBIT='${needs_rabbit}' bash -s" <<'ENDSSH'
+          set -euo pipefail
           kubectl apply -f /tmp/00-namespace.yaml
-
           kubectl -n eats-lab create secret docker-registry docr-cred \
             --docker-server=registry.digitalocean.com \
             --docker-username="$DOCR_TOKEN" \
             --docker-password="$DOCR_TOKEN" \
             --dry-run=client -o yaml | kubectl apply -f -
-
           kubectl apply -f /tmp/00-mysql-redis.yaml
-          echo "Waiting for mysql/redis..."
-          kubectl -n eats-lab rollout status deployment/mysql --timeout=180s
-          kubectl -n eats-lab rollout status deployment/redis --timeout=120s
-
-          if [ "$needs_rabbit" = "1" ]; then
+          if [ "${NEEDS_RABBIT}" = "1" ]; then
             kubectl apply -f /tmp/00-rabbitmq-secret.yaml
             kubectl apply -f /tmp/rabbitmq-service.yaml
             kubectl apply -f /tmp/rabbitmq-ingress.yaml
-
             RABBIT_READY="$(kubectl -n eats-lab get deploy rabbitmq -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)"
             if [ "${RABBIT_READY:-0}" = "1" ]; then
-              echo "rabbitmq already Ready — skip redeploy (avoids stuck RollingUpdate surge)"
+              echo "rabbitmq already Ready — skip redeploy"
             else
-              echo "rabbitmq not Ready (readyReplicas=${RABBIT_READY:-0}); applying deployment..."
-              # Drop unavailable surge pods from prior stuck rolls
               for p in $(kubectl -n eats-lab get pods -l app=rabbitmq --no-headers 2>/dev/null | awk '$2 !~ /^1\// {print $1}'); do
-                echo "Deleting non-ready rabbitmq pod: $p"
                 kubectl -n eats-lab delete pod "$p" --force --grace-period=0 2>/dev/null || true
               done
               kubectl apply -f /tmp/rabbitmq-deployment.yaml
-              echo "Waiting for rabbitmq..."
-              kubectl -n eats-lab rollout status deployment/rabbitmq --timeout=240s
             fi
           fi
+          ENDSSH
 
+          wait_deploy() {
+            local name="$1" timeout_s="${2:-300}"
+            local deadline=$((SECONDS + timeout_s))
+            echo "Waiting for deployment/${name} (up to ${timeout_s}s)..."
+            while (( SECONDS < deadline )); do
+              # 45s chunks + keepalives so GitHub↔droplet SSH does not idle-drop
+              if remote "kubectl -n eats-lab rollout status deployment/${name} --timeout=45s"; then
+                return 0
+              fi
+              echo "...still waiting on ${name} ($(date -u +%H:%M:%S))"
+            done
+            echo "❌ timed out waiting for deployment/${name}"
+            remote "kubectl -n eats-lab get pods -l app=${name} -o wide; kubectl -n eats-lab describe deploy ${name} | tail -30" || true
+            return 1
+          }
+
+          wait_deploy mysql 180
+          wait_deploy redis 120
+          if [ "$needs_rabbit" = "1" ]; then
+            wait_deploy rabbitmq 240
+          fi
+
+          # --- Apply + wait each app (apply is short; wait is chunked) ---
           for s in $SERVICES; do
             TAG="$(tag_for "$s")"
             FULL_IMAGE="${REGISTRY}/${IMAGE_REPO}:${TAG}"
             echo "=== Deploying ${s} → ${FULL_IMAGE} ==="
+            remote "FULL_IMAGE='${FULL_IMAGE}' SERVICE='${s}' bash -s" <<'ENDSSH'
+            set -euo pipefail
             sed -E "s|^([[:space:]]+image:).*registry\\.digitalocean\\.com.*|\\1 ${FULL_IMAGE}|" \
-              "/tmp/${s}.yaml" > "/tmp/${s}.live.yaml"
-            kubectl apply -f "/tmp/${s}.live.yaml"
-            kubectl -n eats-lab rollout status "deployment/${s}" --timeout=300s
-            kubectl -n eats-lab get deploy "$s" -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+              "/tmp/${SERVICE}.yaml" > "/tmp/${SERVICE}.live.yaml"
+            kubectl apply -f "/tmp/${SERVICE}.live.yaml"
+            # Drop long-stuck non-ready pods from prior failed rolls (e.g. ImagePullBackOff)
+            for p in $(kubectl -n eats-lab get pods -l "app=${SERVICE}" --no-headers 2>/dev/null | awk '$2 !~ /^1\// && $3 ~ /BackOff|ErrImage|ImagePull/ {print $1}'); do
+              echo "Deleting stuck pod: $p"
+              kubectl -n eats-lab delete pod "$p" --force --grace-period=0 2>/dev/null || true
+            done
+            ENDSSH
+            wait_deploy "$s" 420
+            remote "kubectl -n eats-lab get deploy ${s} -o jsonpath='{.spec.template.spec.containers[0].image}{\"\\n\"}'"
           done
 
-          echo "=== pods ==="
-          kubectl -n eats-lab get pods -o wide
-          ENDSSH
+          remote "kubectl -n eats-lab get pods -o wide"
