@@ -215,5 +215,5 @@ That is the “if we suddenly get big” lever — without migrating the whole m
 ## Related paths in this repo
 
 - Lab catalog (learning): `k8s/phase1` … `k8s/phase10`, `k8s/cicd`
-- Real DOCR catalog on lab cluster: `k8s/real-eats/`, `.github/workflows/deploy-real-catalog.yml`
+- Real DOCR services on lab cluster: `k8s/real-eats/`, `.github/workflows/deploy-real-eats.yml`
 - Cluster bootstrap: `.github/workflows/bootstrap-cluster.yml`, `inventory/`

@@ -1,0 +1,170 @@
+name: Deploy real Eats (DOCR)
+
+# Deploys one or more real Eats services from DOCR onto the lab cluster.
+# Secrets: SSH_PRIVATE_KEY, DOCR_TOKEN (same DigitalOcean API token pattern as Eats)
+#
+# Add a service later:
+#   1. Manifest under k8s/real-eats/<name>.yaml (Deployment app=<name>)
+#   2. Entry in SERVICES_CATALOG + default tag below
+#   3. Optional workflow_dispatch input for image tag override
+
+on:
+  workflow_dispatch:
+    inputs:
+      services:
+        description: "Comma-separated services, or all (catalog, identity)"
+        required: true
+        default: all
+      catalog_image_tag:
+        description: "DOCR tag for catalog (empty = catalog-service-production)"
+        required: false
+        default: catalog-service-production
+      identity_image_tag:
+        description: "DOCR tag for identity (empty = identity-service-production-8725a49)"
+        required: false
+        default: identity-service-production-8725a49
+
+env:
+  SSH_USER: root
+  REGISTRY: registry.digitalocean.com
+  IMAGE_REPO: cha-registry/kram
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve master IP
+        id: ip
+        run: |
+          IP=$(grep -v '^#' inventory/MASTER_IP | grep -v '^$' | head -1 | tr -d '[:space:]')
+          if [ -z "$IP" ] || [ "$IP" = "YOUR_DROPLET_IP" ]; then
+            echo "❌ Set inventory/MASTER_IP"
+            exit 1
+          fi
+          echo "master_ip=$IP" >> "$GITHUB_OUTPUT"
+
+      - name: Validate secrets
+        run: |
+          if [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ]; then
+            echo "❌ SSH_PRIVATE_KEY missing"; exit 1
+          fi
+          if [ -z "${{ secrets.DOCR_TOKEN }}" ]; then
+            echo "❌ DOCR_TOKEN missing"; exit 1
+          fi
+
+      - name: Resolve service list
+        id: services
+        run: |
+          set -euo pipefail
+          # Known lab services (extend here when adding more)
+          KNOWN="catalog identity"
+          RAW="${{ inputs.services }}"
+          RAW="$(echo "$RAW" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+          if [ -z "$RAW" ] || [ "$RAW" = "all" ]; then
+            LIST="$KNOWN"
+          else
+            LIST="$(echo "$RAW" | tr ',' ' ')"
+          fi
+          RESOLVED=""
+          for s in $LIST; do
+            case " $KNOWN " in
+              *" $s "*) RESOLVED="$RESOLVED $s" ;;
+              *) echo "❌ Unknown service '$s'. Known: $KNOWN (or all)"; exit 1 ;;
+            esac
+          done
+          RESOLVED="$(echo "$RESOLVED" | xargs)"
+          echo "services=$RESOLVED" >> "$GITHUB_OUTPUT"
+          echo "Deploying: $RESOLVED"
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Deploy shared infra + selected services
+        env:
+          MASTER_IP: ${{ steps.ip.outputs.master_ip }}
+          DOCR_TOKEN: ${{ secrets.DOCR_TOKEN }}
+          SERVICES: ${{ steps.services.outputs.services }}
+          CATALOG_IMAGE_TAG: ${{ inputs.catalog_image_tag }}
+          IDENTITY_IMAGE_TAG: ${{ inputs.identity_image_tag }}
+        run: |
+          set -euo pipefail
+          ssh-keyscan -H "$MASTER_IP" >> ~/.ssh/known_hosts
+
+          # Bundles to copy (always shared + selected service manifests)
+          COPY=(
+            k8s/phase1/00-namespace.yaml
+            k8s/real-eats/00-mysql-redis.yaml
+            k8s/phase6/00-rabbitmq-secret.yaml
+            k8s/phase6/rabbitmq-deployment.yaml
+            k8s/phase6/rabbitmq-service.yaml
+            k8s/phase6/rabbitmq-ingress.yaml
+          )
+          for s in $SERVICES; do
+            COPY+=("k8s/real-eats/${s}.yaml")
+          done
+
+          scp -o StrictHostKeyChecking=no "${COPY[@]}" "${SSH_USER}@${MASTER_IP}:/tmp/"
+
+          # shellcheck disable=SC2087
+          ssh -o StrictHostKeyChecking=no "${SSH_USER}@${MASTER_IP}" \
+            "DOCR_TOKEN='${DOCR_TOKEN}' SERVICES='${SERVICES}' \
+             CATALOG_IMAGE_TAG='${CATALOG_IMAGE_TAG}' IDENTITY_IMAGE_TAG='${IDENTITY_IMAGE_TAG}' \
+             REGISTRY='${{ env.REGISTRY }}' IMAGE_REPO='${{ env.IMAGE_REPO }}' bash -s" <<'ENDSSH'
+          set -euo pipefail
+
+          tag_for() {
+            case "$1" in
+              catalog)  echo "${CATALOG_IMAGE_TAG:-catalog-service-production}" ;;
+              identity) echo "${IDENTITY_IMAGE_TAG:-identity-service-production-8725a49}" ;;
+              *) echo "❌ No default tag for $1" >&2; return 1 ;;
+            esac
+          }
+
+          needs_rabbit=0
+          for s in $SERVICES; do
+            case "$s" in
+              identity) needs_rabbit=1 ;;
+            esac
+          done
+
+          kubectl apply -f /tmp/00-namespace.yaml
+
+          kubectl -n eats-lab create secret docker-registry docr-cred \
+            --docker-server=registry.digitalocean.com \
+            --docker-username="$DOCR_TOKEN" \
+            --docker-password="$DOCR_TOKEN" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl apply -f /tmp/00-mysql-redis.yaml
+          echo "Waiting for mysql/redis..."
+          kubectl -n eats-lab rollout status deployment/mysql --timeout=180s
+          kubectl -n eats-lab rollout status deployment/redis --timeout=120s
+
+          if [ "$needs_rabbit" = "1" ]; then
+            kubectl apply -f /tmp/00-rabbitmq-secret.yaml
+            kubectl apply -f /tmp/rabbitmq-deployment.yaml
+            kubectl apply -f /tmp/rabbitmq-service.yaml
+            kubectl apply -f /tmp/rabbitmq-ingress.yaml
+            echo "Waiting for rabbitmq..."
+            kubectl -n eats-lab rollout status deployment/rabbitmq --timeout=180s
+          fi
+
+          for s in $SERVICES; do
+            TAG="$(tag_for "$s")"
+            FULL_IMAGE="${REGISTRY}/${IMAGE_REPO}:${TAG}"
+            echo "=== Deploying ${s} → ${FULL_IMAGE} ==="
+            sed -E "s|^([[:space:]]+image:).*registry\\.digitalocean\\.com.*|\\1 ${FULL_IMAGE}|" \
+              "/tmp/${s}.yaml" > "/tmp/${s}.live.yaml"
+            kubectl apply -f "/tmp/${s}.live.yaml"
+            kubectl -n eats-lab rollout status "deployment/${s}" --timeout=300s
+            kubectl -n eats-lab get deploy "$s" -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+          done
+
+          echo "=== pods ==="
+          kubectl -n eats-lab get pods -o wide
+          ENDSSH

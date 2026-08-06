@@ -96,17 +96,17 @@ kubectl taint nodes <master-node-name> node-role.kubernetes.io/control-plane=tru
 
 See [docs/COMPOSE_TO_K8S_MIGRATION.md](docs/COMPOSE_TO_K8S_MIGRATION.md) for service migration **order** (identity → catalog → …), hybrid cutover checklist, and what to change in Compose BFFs when pointing at K8s.
 
-## Real Eats catalog (DOCR)
-
+## Real Eats services (DOCR)
 
 After `DOCR_TOKEN` is on this repo (same DigitalOcean API token style as Eats):
 
-1. Commit/push `k8s/real-eats/` + `.github/workflows/deploy-real-catalog.yml`
-2. Actions → **Deploy real Eats catalog (DOCR)** → Run workflow  
-   - Tag: `catalog-service-production`
-3. Open http://catalog.eats.local/swagger (hosts already point at master IP)
+1. Commit/push `k8s/real-eats/` + `.github/workflows/deploy-real-eats.yml`
+2. Actions → **Deploy real Eats (DOCR)** → Run workflow  
+   - `services`: `all`, or comma-separated (`catalog`, `identity`, `catalog,identity`)
+   - Optional per-service DOCR tags (defaults: floating catalog prod + identity SHA tag)
+3. Open http://catalog.eats.local/swagger and/or http://identity.eats.local/swagger (hosts → master IP)
 
-This also deploys **mysql** + **redis** in `eats-lab` (catalog’s real deps from compose). Lab GHCR stand-in is replaced.
+Shared deps applied as needed: **mysql**, **redis**, and **rabbitmq** (when identity is selected).
 
 ## CI/CD into the lab (closes the architecture loop)
 
