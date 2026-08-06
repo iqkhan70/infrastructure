@@ -5,8 +5,7 @@ name: Deploy real Eats (DOCR)
 #
 # Add a service later:
 #   1. Manifest under k8s/real-eats/<name>.yaml (Deployment app=<name>)
-#   2. Entry in SERVICES_CATALOG + default tag below
-#   3. Optional workflow_dispatch input for image tag override
+#   2. Entry in known list + tag_for + optional workflow input
 
 on:
   workflow_dispatch:
@@ -28,7 +27,6 @@ env:
   SSH_USER: root
   REGISTRY: registry.digitalocean.com
   IMAGE_REPO: cha-registry/kram
-  # Keep CI ↔ droplet SSH alive during slow rollouts (avoids Broken pipe)
   SSH_OPTS: -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes
 
 jobs:
@@ -101,20 +99,6 @@ jobs:
             ssh $SSH_OPTS "${SSH_USER}@${MASTER_IP}" "$@"
           }
 
-          COPY=(
-            k8s/phase1/00-namespace.yaml
-            k8s/real-eats/00-mysql-redis.yaml
-            k8s/phase6/00-rabbitmq-secret.yaml
-            k8s/phase6/rabbitmq-deployment.yaml
-            k8s/phase6/rabbitmq-service.yaml
-            k8s/phase6/rabbitmq-ingress.yaml
-          )
-          for s in $SERVICES; do
-            COPY+=("k8s/real-eats/${s}.yaml")
-          done
-          # shellcheck disable=SC2086
-          scp $SSH_OPTS "${COPY[@]}" "${SSH_USER}@${MASTER_IP}:/tmp/"
-
           tag_for() {
             case "$1" in
               catalog)  echo "${CATALOG_IMAGE_TAG:-catalog-service-latest}" ;;
@@ -130,31 +114,76 @@ jobs:
             esac
           done
 
-          # Apply shared deps (bash -c; no heredoc — avoids YAML indent closing-delimiter bugs)
-          remote env DOCR_TOKEN="$DOCR_TOKEN" NEEDS_RABBIT="$needs_rabbit" bash -c '
-            set -euo pipefail
-            kubectl apply -f /tmp/00-namespace.yaml
-            kubectl -n eats-lab create secret docker-registry docr-cred \
-              --docker-server=registry.digitalocean.com \
-              --docker-username="$DOCR_TOKEN" \
-              --docker-password="$DOCR_TOKEN" \
-              --dry-run=client -o yaml | kubectl apply -f -
-            kubectl apply -f /tmp/00-mysql-redis.yaml
-            if [ "${NEEDS_RABBIT}" = "1" ]; then
-              kubectl apply -f /tmp/00-rabbitmq-secret.yaml
-              kubectl apply -f /tmp/rabbitmq-service.yaml
-              kubectl apply -f /tmp/rabbitmq-ingress.yaml
-              RABBIT_READY="$(kubectl -n eats-lab get deploy rabbitmq -o jsonpath="{.status.readyReplicas}" 2>/dev/null || echo 0)"
-              if [ "${RABBIT_READY:-0}" = "1" ]; then
-                echo "rabbitmq already Ready — skip redeploy"
-              else
-                for p in $(kubectl -n eats-lab get pods -l app=rabbitmq --no-headers 2>/dev/null | awk "\$2 !~ /^1\// {print \$1}"); do
-                  kubectl -n eats-lab delete pod "$p" --force --grace-period=0 2>/dev/null || true
-                done
-                kubectl apply -f /tmp/rabbitmq-deployment.yaml
-              fi
+          # Remote helpers as real files (avoid ssh eating bash -c quotes)
+          cat > /tmp/apply-infra.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          : "${DOCR_TOKEN:?DOCR_TOKEN required}"
+          NEEDS_RABBIT="${NEEDS_RABBIT:-0}"
+
+          kubectl apply -f /tmp/00-namespace.yaml
+
+          kubectl -n eats-lab create secret docker-registry docr-cred \
+            --docker-server=registry.digitalocean.com \
+            --docker-username="$DOCR_TOKEN" \
+            --docker-password="$DOCR_TOKEN" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl apply -f /tmp/00-mysql-redis.yaml
+
+          if [ "$NEEDS_RABBIT" = "1" ]; then
+            kubectl apply -f /tmp/00-rabbitmq-secret.yaml
+            kubectl apply -f /tmp/rabbitmq-service.yaml
+            kubectl apply -f /tmp/rabbitmq-ingress.yaml
+            RABBIT_READY="$(kubectl -n eats-lab get deploy rabbitmq -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)"
+            if [ "${RABBIT_READY:-0}" = "1" ]; then
+              echo "rabbitmq already Ready — skip redeploy"
+            else
+              for p in $(kubectl -n eats-lab get pods -l app=rabbitmq --no-headers 2>/dev/null | awk '$2 !~ /^1\// {print $1}'); do
+                kubectl -n eats-lab delete pod "$p" --force --grace-period=0 2>/dev/null || true
+              done
+              kubectl apply -f /tmp/rabbitmq-deployment.yaml
             fi
-          '
+          fi
+          SCRIPT
+
+          cat > /tmp/apply-service.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          : "${SERVICE:?}"
+          : "${FULL_IMAGE:?}"
+
+          sed -E "s|^([[:space:]]+image:).*registry\\.digitalocean\\.com.*|\\1 ${FULL_IMAGE}|" \
+            "/tmp/${SERVICE}.yaml" > "/tmp/${SERVICE}.live.yaml"
+          kubectl apply -f "/tmp/${SERVICE}.live.yaml"
+
+          for p in $(kubectl -n eats-lab get pods -l "app=${SERVICE}" --no-headers 2>/dev/null | awk '$2 !~ /^1\// && $3 ~ /BackOff|ErrImage|ImagePull/ {print $1}'); do
+            echo "Deleting stuck pod: $p"
+            kubectl -n eats-lab delete pod "$p" --force --grace-period=0 2>/dev/null || true
+          done
+          SCRIPT
+
+          # Strip leading spaces Actions left in the heredoc bodies
+          sed -i 's/^          //' /tmp/apply-infra.sh /tmp/apply-service.sh
+          chmod +x /tmp/apply-infra.sh /tmp/apply-service.sh
+
+          COPY=(
+            /tmp/apply-infra.sh
+            /tmp/apply-service.sh
+            k8s/phase1/00-namespace.yaml
+            k8s/real-eats/00-mysql-redis.yaml
+            k8s/phase6/00-rabbitmq-secret.yaml
+            k8s/phase6/rabbitmq-deployment.yaml
+            k8s/phase6/rabbitmq-service.yaml
+            k8s/phase6/rabbitmq-ingress.yaml
+          )
+          for s in $SERVICES; do
+            COPY+=("k8s/real-eats/${s}.yaml")
+          done
+          # shellcheck disable=SC2086
+          scp $SSH_OPTS "${COPY[@]}" "${SSH_USER}@${MASTER_IP}:/tmp/"
+
+          remote "DOCR_TOKEN=$(printf %q "$DOCR_TOKEN") NEEDS_RABBIT=$(printf %q "$needs_rabbit") bash /tmp/apply-infra.sh"
 
           wait_deploy() {
             local name="$1" timeout_s="${2:-300}"
@@ -181,16 +210,7 @@ jobs:
             TAG="$(tag_for "$s")"
             FULL_IMAGE="${REGISTRY}/${IMAGE_REPO}:${TAG}"
             echo "=== Deploying ${s} → ${FULL_IMAGE} ==="
-            remote env FULL_IMAGE="$FULL_IMAGE" SERVICE="$s" bash -c '
-              set -euo pipefail
-              sed -E "s|^([[:space:]]+image:).*registry\\.digitalocean\\.com.*|\\1 ${FULL_IMAGE}|" \
-                "/tmp/${SERVICE}.yaml" > "/tmp/${SERVICE}.live.yaml"
-              kubectl apply -f "/tmp/${SERVICE}.live.yaml"
-              for p in $(kubectl -n eats-lab get pods -l "app=${SERVICE}" --no-headers 2>/dev/null | awk "\$2 !~ /^1\// && \$3 ~ /BackOff|ErrImage|ImagePull/ {print \$1}"); do
-                echo "Deleting stuck pod: $p"
-                kubectl -n eats-lab delete pod "$p" --force --grace-period=0 2>/dev/null || true
-              done
-            '
+            remote "SERVICE=$(printf %q "$s") FULL_IMAGE=$(printf %q "$FULL_IMAGE") bash /tmp/apply-service.sh"
             wait_deploy "$s" 420
             remote "kubectl -n eats-lab get deploy ${s} -o jsonpath='{.spec.template.spec.containers[0].image}{\"\\n\"}'"
           done
