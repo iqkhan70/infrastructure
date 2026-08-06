@@ -103,7 +103,7 @@ After `DOCR_TOKEN` is on this repo (same DigitalOcean API token style as Eats):
 1. Commit/push `k8s/real-eats/` + `.github/workflows/deploy-real-eats.yml`
 2. Actions → **Deploy real Eats (DOCR)** → Run workflow  
    - `services`: `all`, or comma-separated (`catalog`, `identity`, `catalog,identity`)
-   - Optional per-service DOCR tags (defaults: floating catalog prod + identity SHA tag)
+   - Optional per-service DOCR tags (defaults: `catalog-service-latest`, `identity-service-latest`)
 3. Open http://catalog.eats.local/swagger and/or http://identity.eats.local/swagger (hosts → master IP)
 
 Shared deps applied as needed: **mysql**, **redis**, and **rabbitmq** (when identity is selected).

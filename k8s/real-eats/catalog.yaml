@@ -33,8 +33,8 @@ spec:
               app: catalog
       containers:
         - name: catalog
-          # Latest prod floating tag (same build as catalog-service-production-<sha>)
-          image: registry.digitalocean.com/cha-registry/kram:catalog-service-production
+          # DOCR floating latest tag from Eats pipeline
+          image: registry.digitalocean.com/cha-registry/kram:catalog-service-latest
           imagePullPolicy: Always
           ports:
             - name: http

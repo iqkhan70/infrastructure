@@ -43,7 +43,7 @@ We are **not** migrating the whole stack at once, so we **cannot** afford a seco
 
 | Piece | What we use today |
 |-------|-------------------|
-| Image | DOCR `kram:catalog-service-production` (real app bits) |
+| Image | DOCR `kram:catalog-service-latest` (real app bits) |
 | MySQL | **In-cluster lab** Service `mysql` (`eats-lab`) |
 | Connection | `ConnectionStrings__CatalogDb=server=mysql;…;database=traditional_eats_catalog;…` |
 | Redis | In-cluster `redis:6379` |

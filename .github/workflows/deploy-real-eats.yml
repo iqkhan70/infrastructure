@@ -16,13 +16,13 @@ on:
         required: true
         default: all
       catalog_image_tag:
-        description: "DOCR tag for catalog (empty = catalog-service-production)"
+        description: "DOCR tag for catalog (empty = catalog-service-latest)"
         required: false
-        default: catalog-service-production
+        default: catalog-service-latest
       identity_image_tag:
-        description: "DOCR tag for identity (empty = identity-service-production-8725a49)"
+        description: "DOCR tag for identity (empty = identity-service-latest)"
         required: false
-        default: identity-service-production-8725a49
+        default: identity-service-latest
 
 env:
   SSH_USER: root
@@ -119,8 +119,8 @@ jobs:
 
           tag_for() {
             case "$1" in
-              catalog)  echo "${CATALOG_IMAGE_TAG:-catalog-service-production}" ;;
-              identity) echo "${IDENTITY_IMAGE_TAG:-identity-service-production-8725a49}" ;;
+              catalog)  echo "${CATALOG_IMAGE_TAG:-catalog-service-latest}" ;;
+              identity) echo "${IDENTITY_IMAGE_TAG:-identity-service-latest}" ;;
               *) echo "❌ No default tag for $1" >&2; return 1 ;;
             esac
           }

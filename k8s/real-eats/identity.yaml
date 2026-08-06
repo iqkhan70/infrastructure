@@ -44,9 +44,8 @@ spec:
               app: identity
       containers:
         - name: identity
-          # Latest available prod tag. No floating identity-service-production in DOCR —
-          # pipeline only pushed identity-service-production-<shortsha>; bump SHA after new deploys.
-          image: registry.digitalocean.com/cha-registry/kram:identity-service-production-8725a49
+          # DOCR floating latest tag from Eats pipeline
+          image: registry.digitalocean.com/cha-registry/kram:identity-service-latest
           imagePullPolicy: Always
           ports:
             - name: http
